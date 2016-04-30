@@ -1,0 +1,27 @@
+-- This file has been generated from package.yaml by hpack version 0.9.0.
+--
+-- see: https://github.com/sol/hpack
+
+name:           toy-ml
+version:        0.0.0
+homepage:       https://github.com/mitchellwrosen/toy-ml#readme
+bug-reports:    https://github.com/mitchellwrosen/toy-ml/issues
+license:        BSD3
+build-type:     Simple
+cabal-version:  >= 1.10
+
+source-repository head
+  type: git
+  location: https://github.com/mitchellwrosen/toy-ml
+
+library
+  hs-source-dirs:
+      src
+  build-depends:
+      base
+    , foldl
+    , matrix
+    , vector
+  exposed-modules:
+      ML.LinearRegression
+  default-language: Haskell2010

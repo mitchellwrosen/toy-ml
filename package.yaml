@@ -1,0 +1,11 @@
+name: toy-ml
+github: mitchellwrosen/toy-ml
+license: BSD3
+
+library:
+  source-dirs: src
+  dependencies:
+    - base
+    - foldl
+    - matrix
+    - vector
