@@ -1,14 +1,14 @@
 {-# LANGUAGE DataKinds           #-}
 {-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE KindSignatures      #-}
+{-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeOperators       #-}
 
 module ML.LinearRegression
   ( trainHypothesis
-  , scaleFeatures
   , gradientDescent
   , normal
-  , vcons
   ) where
 
 import ML.Internal.Shim    (pinv)
@@ -16,7 +16,8 @@ import ML.Internal.Shim    (pinv)
 import Control.Applicative (liftA2)
 import Data.Distributive   (Distributive)
 import Data.Maybe          (fromJust)
-import GHC.TypeLits        (type (+), KnownNat)
+import Data.Proxy          (Proxy(..))
+import GHC.TypeLits        (type (+), KnownNat, Nat, natVal)
 import Linear.Matrix
 import Linear.Metric
 import Linear.V
@@ -25,42 +26,46 @@ import Linear.Vector
 import qualified Control.Foldl as Foldl
 import qualified Data.Vector   as Vector
 
--- | @trainHypothesis iters alpha xs ys@ trains a hypothesis using @iters@
--- iterations of gradient descent, with @α = alpha@.
+-- | @trainHypothesis method xs ys@ trains a hypothesis using training data
+-- @xs@ and labels @ys@ with method @method@. The two methods provided by this
+-- module are 'gradientDescent' and 'normal'.
 --
 -- @
--- > let xs = V [V [2104,5,1,45], V [1416,3,2,40], V [1534,3,2,30], V [852,2,1,36]] :: V 4 (V 4 Double)
--- > let ys = V [460,232,315,178] :: V 4 Double
--- > let hypothesis = 'trainHypothesis' 1000 0.05 xs ys
--- > hypothesis (V [2000,2,2,35])
+-- -- Make some training data and labels.
+-- > :set -XOverloadedLists
+-- > let xs = 'V' ['V' [2104,5,1,45], 'V' [1416,3,2,40], 'V' [1534,3,2,30], 'V' [852,2,1,36]] :: 'V' 4 ('V' 4 Double)
+-- > let ys = 'V' [460,232,315,178] :: 'V' 4 Double
+--
+-- -- Train a hypothesis using gradient descent, and test it out on a new example.
+-- > let h1 = 'trainHypothesis' ('gradientDescent' 1000 0.05) xs ys
+-- > h1 ('V' [2000,2,2,35])
 -- 295.30300153265136
+--
+-- -- Train a hypothesis using the normal equation, and test it out on a new example.
+-- > let h2 = 'trainHypothesis' 'normal' xs ys
+-- > h2 ('V' [2000,2,2,35])
+-- 295.95655623793584
 -- @
 trainHypothesis
-  :: forall n m a. (KnownNat n, KnownNat m, KnownNat (m+1), Fractional a, Num a, Ord a)
-  => Int
-  -> a
+  :: forall a (n :: Nat) (m :: Nat).
+     (Fractional a, Num a, Ord a, KnownNat n, KnownNat m, KnownNat (m+1))
+  => (forall i j. (KnownNat i, KnownNat j) => V i (V j a) -> V i a -> V j a)
   -> V n (V m a)
   -> V n a
   -> V m a
   -> a
-trainHypothesis iters alpha xs0 ys xs =
+trainHypothesis trainParams xs0 ys xs =
   let
     scaleRow :: V m a -> V m a
     scaleRow = scaleFeatures xs0
 
-    -- Scale training data by subtracting mean and dividing by range, then
-    -- prepend a 1 to every row.
     xs0' :: V n (V (m+1) a)
     xs0' = vcons 1 . scaleRow <$> xs0
 
-    trained_params :: V (m+1) a
-    trained_params = iterate (gradientDescent alpha xs0' ys) initial_params !! iters
-     where
-      -- A type-unsafe construction here; we assert that 1 + length xs = m + 1.
-      initial_params :: V (m+1) a
-      initial_params = V (Vector.replicate (1 + length xs) 1)
+    params :: V (m+1) a
+    params = trainParams xs0' ys
   in
-    vcons 1 (scaleRow xs) `dot` trained_params
+    vcons 1 (scaleRow xs) `dot` params
 
 -- | Given a matrix of training data, return a row-scaling function that
 -- subtracts the mean and divides by the range of each feature.
@@ -85,19 +90,40 @@ scaleFeatures xs = liftI2 scale urs
   scale :: (a, a) -> a -> a
   scale (u,r) x = (x-u)/r
 
+-- | @gradientDescent iters alpha xs ys@ learns parameters @θ@ corresponding to
+-- training data @xs@ and labels @ys@ by applying @iters@ iterations of the
+-- gradient descent algorithm using learning rate @alpha@.
+--
+-- May be used as the first argument to 'trainHypothesis'.
+gradientDescent
+  :: forall a m n. (Fractional a, KnownNat n, KnownNat m)
+  => Int
+  -> a
+  -> V n (V m a)
+  -> V n a
+  -> V m a
+gradientDescent iters alpha xs ys =
+  iterate (gradientDescentStep alpha xs ys) ts !! iters
+ where
+  ts :: V m a
+  ts = V (Vector.replicate m 1)
+
+  m :: Int
+  m = fromIntegral (natVal (Proxy :: Proxy m))
+
 -- | Take one step using the gradient descent algorithm with learning rate @α@.
 --
 -- @
--- gradientDescent :: Fractional a => a -> V n (V m a) -> V n a -> V m a -> V m a
+-- gradientDescentStep :: Fractional a => a -> V n (V m a) -> V n a -> V m a -> V m a
 -- @
-gradientDescent
+gradientDescentStep
   :: (Fractional a, Num (f a), Num (t a), Foldable f, Foldable t, Additive f, Additive t)
   => a
   -> t (f a)
   -> t a
   -> f a
   -> f a
-gradientDescent alpha xs ys ts = ts - alpha *^ (cost xs ys ts)
+gradientDescentStep alpha xs ys ts = ts - alpha *^ (cost xs ys ts)
 
 -- | Calculate the derivative of the cost function with respect to θ.
 --
@@ -114,22 +140,16 @@ cost
   -> f a
 cost xs ys ts = ((xs !* ts - ys) *! xs) ^/ fromIntegral (length ys)
 
--- | The normal equation.
+-- |
 --
 -- @
 -- θ = inv(X'X)X'y
 -- @
 --
--- @
--- > let xs = V [V [2104,5,1,45], V [1416,3,2,40], V [1534,3,2,30], V [852,2,1,36]] :: V 4 (V 4 Double)
--- > let scale = 'scaleFeatures' xs
--- > let xs' = 'vcons' 1 . scale <$> xs
--- > let ys = V [460,232,315,178] :: V 4 Double
--- > let ts = 'normal' xs' ys
--- > let hypothesis = \v -> 'dot' (vcons 1 (scale v)) ts
--- > hypothesis (V [2000,2,2,35])
--- 295.95655623793584
--- @
+-- The normal equation. Calculates parameters @θ@ corresponding to
+-- training data @xs@ and labels @ys@.
+--
+-- May be used as the first argument to 'trainHypothesis'.
 normal :: (Foldable t, Additive t, KnownNat n) => t (V n Double) -> t Double -> V n Double
 normal xs ys = pinv (xs' !*! xs) !*! xs' !* ys
  where
