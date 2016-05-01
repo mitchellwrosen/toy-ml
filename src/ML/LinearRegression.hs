@@ -1,172 +1,96 @@
+{-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE RecordWildCards     #-}
-{-# LANGUAGE ViewPatterns        #-}
+{-# LANGUAGE TypeOperators       #-}
 
 module ML.LinearRegression
-  ( TrainingData
-  , Hypothesis
-  , trainHypothesis
-  , trainHypothesisDebug
+  ( trainHypothesis
+  , gradientDescent
   ) where
 
-import Data.Matrix (Matrix)
-import Data.Maybe  (fromJust)
-import Data.Vector (Vector)
-import Debug.Trace (traceShow)
+import Control.Applicative (liftA2)
+import Data.Maybe          (fromJust)
+import GHC.TypeLits        (type (+), KnownNat)
+import Linear.Matrix
+import Linear.Metric
+import Linear.V
+import Linear.Vector
 
 import qualified Control.Foldl as Foldl
-import qualified Data.Matrix   as Matrix
 import qualified Data.Vector   as Vector
 
--- | Feature matrix, containing one example per row.
-type TrainingData a = Matrix a
+-- Internal type aliases for documentation purposes.
+type Mean a = a
+type Range a = a
 
--- | A trained 'Hypothesis' outputs values given feature 'Vector's.
-type Hypothesis a = Vector a -> a
-
-type Params a = Vector a
-
--- | @trainHypothesis iters alpha xs ys@ trains a 'Hypothesis' using @iters@
+-- | @trainHypothesis iters alpha xs ys@ trains a hypothesis using @iters@
 -- iterations of gradient descent, with @α = alpha@.
 --
 -- @
--- > let training_xs = Matrix.fromLists [[2104,5,1,45],[1416,3,2,40],[1534,3,2,30],[852,2,1,36]]
--- > let training_ys = Vector.fromList [460,232,315,178]
--- > let hypothesis = trainHypothesis 1000 0.05 training_xs training_ys
--- > hypothesis (Vector.fromList [2000, 2, 2, 35])
+-- > let xs = V [V [2104,5,1,45], V [1416,3,2,40], V [1534,3,2,30], V [852,2,1,36]] :: V 4 (V 4 Double)
+-- > let ys = V [460,232,315,178] :: V 4 Double
+-- > let hypothesis = trainHypothesis 1000 0.05 xs ys
+-- > hypothesis (V [2000,2,2,35])
 -- 295.30300153265136
 -- @
 trainHypothesis
-  :: forall a. (Show a, Ord a, Num a, Fractional a)
+  :: forall n m a. (KnownNat n, KnownNat m, KnownNat (m+1), Fractional a, Num a, Ord a)
   => Int
   -> a
-  -> TrainingData a
-  -> Vector a
-  -> Hypothesis a
-trainHypothesis = trainHypothesis_ Nothing
-
--- | Like @trainHypothesis@, but takes an additional training sample to run
--- against each gradient descent step. Each iteration outputs
--- @expected - actual@, which should move towards 0.
---
--- @
--- > let training_xs = Matrix.fromLists [[2104,5,1,45],[1416,3,2,40],[1534,3,2,30],[852,2,1,36]]
--- > let training_ys = Vector.fromList [460,232,315,178]
--- > let x0 = Vector.fromList [2104,5,1,45]
--- > let y0 = 460
--- > let hypothesis = trainHypothesisDebug (x0,y0) 1000 0.05 training_xs training_ys
--- > hypothesis (Vector.fromList [2000, 2, 2, 35])
--- 620.4673421807009
--- 603.789203117362
--- 587.8599241747207
--- 572.6435731329733
--- ...
--- 181.3027228745516
--- 181.29971956831366
--- 181.2967232018583   // this is the last \'expected - actual\'
--- 295.30300153265136
--- @
-trainHypothesisDebug
-  :: forall a. (Show a, Ord a, Num a, Fractional a)
-  => (Vector a, a)
-  -> Int
+  -> V n (V m a)
+  -> V n a
+  -> V m a
   -> a
-  -> TrainingData a
-  -> Vector a
-  -> Hypothesis a
-trainHypothesisDebug = trainHypothesis_ . Just
-
-trainHypothesis_
-  :: forall a. (Show a, Ord a, Num a, Fractional a)
-  => Maybe (Vector a, a)
-  -> Int
-  -> a
-  -> TrainingData a
-  -> Vector a
-  -> Hypothesis a
-trainHypothesis_ mdebug iters alpha xss ys =
+trainHypothesis iters alpha xs0 ys xs =
   let
-    mean_range_vector :: Vector (a, a)
-    mean_range_vector = meanRangeVector xss
-
-    -- Training data, scaled by subtracting mean and dividing by range.
-    xss' :: TrainingData a
-    xss' = Matrix.elementwise scaleElem mean_range_matrix xss
+    -- Means (u) and ranges (r) of each feature.
+    urs :: V m (Mean a, Range a)
+    urs = Foldl.fold (liftA2 (,) mean range) . toVector <$> transpose xs0
      where
-      mean_range_matrix :: Matrix (a, a)
-      mean_range_matrix = replicateRowVector (Matrix.nrows xss) mean_range_vector
+      mean :: Foldl.Fold a (Mean a)
+      mean = liftA2 (/) Foldl.sum Foldl.genericLength
 
-    -- Scaled training data with a 1 prepended to every row
-    xss'' :: TrainingData a
-    xss'' = Matrix.colVector (Vector.replicate (Matrix.nrows xss) 1) Matrix.<|> xss'
+      range :: Foldl.Fold a (Range a)
+      range = liftA2 (-) (fromJust <$> Foldl.maximum) (fromJust <$> Foldl.minimum)
 
-    trainParams :: Int -> Params a -> Params a
-    trainParams 0 ps = ps
-    trainParams n ps =
-      let
-        ps'  = gradDescentStep xss'' ys alpha ps
-        ps'' = trainParams (n-1) ps'
-      in
-        case mdebug of
-          Nothing -> ps''
-          Just (xs,y) -> traceShow (y - hypothesis ps' xs) ps''
+    scale :: (Mean a, Range a) -> a -> a
+    scale (u,r) x = (x-u)/r
 
-    -- Train params by iterating gradient descent
-    trained_params :: Params a
-    trained_params = trainParams iters initial_params
+    -- Scale training data by subtracting mean and dividing by range, then
+    -- prepend a 1 to every row.
+    xs0' :: V n (V (m+1) a)
+    xs0' = vcons 1 . liftI2 scale urs <$> xs0
+
+    trained_params :: V (m+1) a
+    trained_params = iterate (gradientDescent alpha xs0' ys) initial_params !! iters
      where
-      initial_params :: Params a
-      initial_params = Vector.replicate (Matrix.ncols xss'') 1
-
-    hypothesis :: Params a -> Hypothesis a
-    hypothesis ps v =
-      Vector.cons 1 (fmap (uncurry scaleElem) (Vector.zip mean_range_vector v))
-      `vdot`
-      ps
+      -- A type-unsafe construction here; we assert that 1 + length xs = m + 1.
+      initial_params :: V (m+1) a
+      initial_params = V (Vector.replicate (1 + length xs) 1)
   in
-    hypothesis trained_params
+    vcons 1 (liftI2 scale urs xs) `dot` trained_params
 
--- | Perform one step of gradient descent, transforming the input params.
--- Assumes the training data is already scaled, and has 1s prepended to each
--- row.
-gradDescentStep :: (Num a, Fractional a) => TrainingData a -> Vector a -> a -> Params a -> Params a
-gradDescentStep xss ys a ts =
-  Vector.zipWith (\t d -> t - a*d) ts (cost' ts xss ys)
- where
-  cost' :: (Num a, Fractional a) => Params a -> TrainingData a -> Vector a -> Params a
-  cost' ts xss ys =
-    normalize (Matrix.getRow 1 (Matrix.transpose ds * xss))
-   where
-    -- Column vector
-    ds = xss * Matrix.colVector ts - Matrix.colVector ys
-    normalize = fmap (/ (fromIntegral (length ys)))
+-- | Take one step using the gradient descent algorithm with learning rate @α@.
+gradientDescent
+  :: (KnownNat n, KnownNat m, Num a, Fractional a)
+  => a
+  -> V n (V m a)
+  -> V n a
+  -> V m a
+  -> V m a
+gradientDescent alpha xs ys ts = ts - alpha *^ (cost xs ys ts)
 
--- Matrix extras
+-- | Calculate the derivative of the cost function with respect to θ.
+--
+-- (δ/δ(θ_j))(J(θ)) = 1/n * Σ(h(θ,x)-y)(x_j)
+--
+cost
+  :: (KnownNat n, KnownNat m, Num a, Fractional a)
+  => V n (V m a)
+  -> V n a
+  -> V m a
+  -> V m a
+cost xs ys ts = ((xs !* ts - ys) *! xs) ^/ fromIntegral (length ys)
 
-vdot :: Num a => Vector a -> Vector a -> a
-vdot xs ys = sum (Vector.zipWith (*) xs ys)
-
-getCols :: Matrix a -> Vector (Vector a)
-getCols m = Vector.fromList (map (\i -> Matrix.getCol i m) [1 .. Matrix.ncols m])
-
-replicateRowVector :: Int -> Vector a -> Matrix a
-replicateRowVector n0 (Matrix.rowVector -> m0) = go (n0-1) m0
- where
-  go 0 acc = acc
-  go n acc = go (n-1) (m0 Matrix.<-> acc)
-
-meanRangeVector :: forall a. (Ord a, Num a, Fractional a) => TrainingData a -> Vector (a,a)
-meanRangeVector xss = Foldl.fold ((,) <$> meanFold <*> rangeFold) <$> getCols xss
- where
-  meanFold :: Foldl.Fold a a
-  meanFold = (/)
-    <$> Foldl.sum
-    <*> Foldl.genericLength
-
-  rangeFold :: Foldl.Fold a a
-  rangeFold = (-)
-    <$> (fromJust <$> Foldl.maximum)
-    <*> (fromJust <$> Foldl.minimum)
-
-scaleElem :: forall a. (Fractional a, Num a) => (a, a) -> a -> a
-scaleElem (mean, range) x = (x-mean)/range
+vcons :: a -> V n a -> V (n+1) a
+vcons x (V xs) = V (Vector.cons x xs)

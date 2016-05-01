@@ -2,10 +2,12 @@ name: toy-ml
 github: mitchellwrosen/toy-ml
 license: BSD3
 
+ghc-options: -Wall
+
 library:
   source-dirs: src
   dependencies:
     - base
     - foldl
-    - matrix
+    - linear
     - vector
