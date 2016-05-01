@@ -20,9 +20,12 @@ library
   ghc-options: -Wall
   build-depends:
       base
+    , distributive
     , foldl
+    , hmatrix
     , linear
     , vector
   exposed-modules:
+      ML.Internal.Shim
       ML.LinearRegression
   default-language: Haskell2010
