@@ -1,4 +1,4 @@
--- This file has been generated from package.yaml by hpack version 0.9.0.
+-- This file has been generated from package.yaml by hpack version 0.13.0.
 --
 -- see: https://github.com/sol/hpack
 
@@ -27,5 +27,7 @@ library
     , vector
   exposed-modules:
       ML.Internal.Shim
-      ML.LinearRegression
+      ML.Regression
+      ML.Regression.Linear
+      ML.Regression.Logistic
   default-language: Haskell2010

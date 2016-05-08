@@ -34,6 +34,13 @@ hmatrix2linear =
   . map (Linear.V . Vector.Generic.convert)
   . HMatrix.toRows
 
+withHMatrix
+  :: forall (n :: Nat) (m :: Nat) (i :: Nat) (j :: Nat).
+     (HMatrix.Matrix Double -> HMatrix.Matrix Double)
+  -> Linear.V n (Linear.V m Double)
+  -> Linear.V i (Linear.V j Double)
+withHMatrix f = hmatrix2linear . f . linear2hmatrix
+
 -- | Pseudo-inverse of a matrix.
 pinv :: forall (n :: Nat). Linear.V n (Linear.V n Double) -> Linear.V n (Linear.V n Double)
-pinv = hmatrix2linear . HMatrix.pinv . linear2hmatrix
+pinv = withHMatrix HMatrix.pinv
